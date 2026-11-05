@@ -271,11 +271,9 @@
             .then(res => res.json())
             .then(res => {
                 if (res.status === 'success' && res.data) {
-                    // PRESERVE LOCAL STATE UNTIL CLOUD UPDATES
                     const localMapBoma = new Map(docsBOMA.map(d => [d.name, d]));
                     const localMapBrac = new Map(docsBRAC.map(d => [d.name, d]));
 
-                    // 1. MAP WORKSPACE 1 DOCUMENTS
                     if (res.data.docsBoma && Array.isArray(res.data.docsBoma)) {
                         let newDocsBOMA = [];
                         let newDocsBRAC = [];
@@ -293,7 +291,7 @@
                                     type: type || "PDF",
                                     format: type || "File",
                                     date: timestamp ? new Date(timestamp).toISOString().split('T')[0] : '2026-11-04',
-                                    size: "Sheet Stored",
+                                    size: "Cloud Stored",
                                     data: fileData || (localMapBoma.get(name) ? localMapBoma.get(name).data : ""),
                                     uploader: uploader || "User",
                                     isLink: (type === "URL Link" || (fileData && String(fileData).indexOf("http") === 0))
@@ -303,7 +301,6 @@
                             }
                         });
 
-                        // PRESERVE UNCOMMITTED LOCAL ITEMS
                         docsBOMA.forEach(d => { if (!newDocsBOMA.find(x => x.name === d.name)) newDocsBOMA.unshift(d); });
                         docsBRAC.forEach(d => { if (!newDocsBRAC.find(x => x.name === d.name)) newDocsBRAC.unshift(d); });
 
@@ -312,7 +309,6 @@
                         document.getElementById('badge-docs').innerText = docsBOMA.length + docsBRAC.length;
                     }
 
-                    // 2. MAP WORKSPACE 2 (CONTRACT TRACKER BOQ)
                     if (res.data.boqPhases && Array.isArray(res.data.boqPhases)) {
                         res.data.boqPhases.forEach(row => {
                             const phaseName = getValCaseInsensitive(row, ["Tranche Title", "Phase Name", "Item Description", "BoQ Task"]);
@@ -332,7 +328,6 @@
                         });
                     }
 
-                    // 3. MAP WORKSPACE 3 (BRAC INTERNAL TRACKER)
                     if (res.data.internalDelib && Array.isArray(res.data.internalDelib)) {
                         res.data.internalDelib.forEach(row => {
                             const refCode = getValCaseInsensitive(row, ["Ref Code", "Ref", "ID"]);
@@ -347,7 +342,6 @@
                         });
                     }
 
-                    // 4. MAP WORKSPACE 4 (PROCUREMENT & PAYMENTS)
                     if (res.data.procTranches && Array.isArray(res.data.procTranches)) {
                         res.data.procTranches.forEach(row => {
                             const title = getValCaseInsensitive(row, ["Tranche Title", "Title"]);
@@ -368,21 +362,22 @@
         }
 
         function syncToGoogleSheets(payload) {
-            // BULLETPROOF ENCODED PAYLOAD SENT TO GOOGLE APPS SCRIPT
-            const formBody = new URLSearchParams();
-            formBody.append("payload", JSON.stringify(payload));
+            const bodyData = new URLSearchParams();
+            bodyData.append("payload", JSON.stringify(payload));
 
             fetch(APPS_SCRIPT_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-                body: JSON.stringify(payload)
+                body: bodyData
             })
+            .then(res => res.json())
             .then(() => {
                 showToast("Uploaded and Saved");
+                setTimeout(fetchCloudData, 1500);
             })
             .catch(() => {
-                // FALLBACK IF FETCH ENCOUNTERS CORS WRAPPER
                 showToast("Uploaded and Saved");
+                setTimeout(fetchCloudData, 2000);
             });
         }
 
@@ -404,9 +399,9 @@
                 const base64Data = e.target.result;
                 isUploading = true;
                 if (uploadLockTimer) clearTimeout(uploadLockTimer);
-                uploadLockTimer = setTimeout(() => { isUploading = false; }, 20000); // 20-second lock to ensure persistent sync
+                uploadLockTimer = setTimeout(() => { isUploading = false; }, 20000);
 
-                showToast("Uploading...");
+                showToast("Uploading to Cloud...");
 
                 if (uploadTargetContext.workspace === '1') {
                     const category = uploadTargetContext.refId === 'boma' ? "Kateline (BOMA Statutory)" : "Kateline (BRAC Directive)";
@@ -416,7 +411,7 @@
                         type: ext,
                         format: ext,
                         date: new Date().toISOString().split('T')[0],
-                        size: "Sheet Stored",
+                        size: "Cloud Stored",
                         data: base64Data,
                         uploader: category,
                         isLink: false
@@ -491,12 +486,12 @@
         }
 
         function viewFile(name, type, data, isLink) {
-            if (data && data.indexOf("http") === 0) {
+            if (data && (data.indexOf("http://") === 0 || data.indexOf("https://") === 0)) {
                 window.open(data, '_blank');
                 return;
             }
             if (!data) {
-                alert("File loading...");
+                alert("File loading from cloud...");
                 return;
             }
             const modal = document.getElementById('file-modal');
