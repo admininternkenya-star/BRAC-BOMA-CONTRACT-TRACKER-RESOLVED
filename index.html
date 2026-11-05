@@ -265,119 +265,97 @@
             overlay.classList.toggle('hidden');
         }
 
+        // Apps Script is on a different origin. JSONP is used for reads and a
+        // simple form POST (no-cors) for writes to avoid browser CORS preflight.
         function fetchCloudData() {
             if (isUploading) return;
-            fetch(APPS_SCRIPT_URL)
-            .then(res => res.json())
-            .then(res => {
-                if (res.status === 'success' && res.data) {
-                    const localMapBoma = new Map(docsBOMA.map(d => [d.name, d]));
-                    const localMapBrac = new Map(docsBRAC.map(d => [d.name, d]));
-
-                    if (res.data.docsBoma && Array.isArray(res.data.docsBoma)) {
-                        let newDocsBOMA = [];
-                        let newDocsBRAC = [];
-                        res.data.docsBoma.forEach(row => {
-                            const name = getValCaseInsensitive(row, ["File name", "FileName", "File Name", "Name"]);
-                            const type = getValCaseInsensitive(row, ["File Type", "FileType", "Format"]);
-                            const fileData = getValCaseInsensitive(row, ["File Data", "FileData", "URL", "File Data / Link"]);
-                            const uploader = getValCaseInsensitive(row, ["Uploaded By/ Category", "Uploaded By", "Category", "Uploader"]);
-                            const timestamp = getValCaseInsensitive(row, ["Timestamp", "Date"]);
-
-                            if (name || fileData) {
-                                const item = {
-                                    id: Date.now() + Math.random(),
-                                    name: name || "Document",
-                                    type: type || "PDF",
-                                    format: type || "File",
-                                    date: timestamp ? new Date(timestamp).toISOString().split('T')[0] : '2026-11-04',
-                                    size: "Cloud Stored",
-                                    data: fileData || (localMapBoma.get(name) ? localMapBoma.get(name).data : ""),
-                                    uploader: uploader || "User",
-                                    isLink: (type === "URL Link" || (fileData && String(fileData).indexOf("http") === 0))
-                                };
-                                if (String(item.uploader).includes("BOMA")) newDocsBOMA.unshift(item);
-                                else newDocsBRAC.unshift(item);
-                            }
-                        });
-
-                        docsBOMA.forEach(d => { if (!newDocsBOMA.find(x => x.name === d.name)) newDocsBOMA.unshift(d); });
-                        docsBRAC.forEach(d => { if (!newDocsBRAC.find(x => x.name === d.name)) newDocsBRAC.unshift(d); });
-
-                        docsBOMA = newDocsBOMA;
-                        docsBRAC = newDocsBRAC;
-                        document.getElementById('badge-docs').innerText = docsBOMA.length + docsBRAC.length;
-                    }
-
-                    if (res.data.boqPhases && Array.isArray(res.data.boqPhases)) {
-                        res.data.boqPhases.forEach(row => {
-                            const phaseName = getValCaseInsensitive(row, ["Tranche Title", "Phase Name", "Item Description", "BoQ Task"]);
-                            const url = getValCaseInsensitive(row, ["Uploaded Invoice/Document", "File Data", "URL", "Attachment"]);
-                            const status = getValCaseInsensitive(row, ["Status"]);
-                            const comment = getValCaseInsensitive(row, ["Comments/ Offset notes", "Notes", "Comment"]);
-                            
-                            const match = boqPhasesData.find(b => b.item.toLowerCase() === phaseName.toLowerCase() || phaseName.includes(b.id));
-                            if (match) {
-                                if (url) {
-                                    match.attachment = "Attached File";
-                                    match.fileData = url;
-                                }
-                                if (status) match.status = status;
-                                if (comment) match.comment = comment;
-                            }
-                        });
-                    }
-
-                    if (res.data.internalDelib && Array.isArray(res.data.internalDelib)) {
-                        res.data.internalDelib.forEach(row => {
-                            const refCode = getValCaseInsensitive(row, ["Ref Code", "Ref", "ID"]);
-                            const topic = getValCaseInsensitive(row, ["Topic / Specification Item", "Topic"]);
-                            const url = getValCaseInsensitive(row, ["Attachment / Doc URL", "File Data", "URL", "Doc URL"]);
-                            
-                            const match = internalDeliberations.find(d => d.id === refCode || d.topic === topic);
-                            if (match && url) {
-                                match.docLink = "Attached File";
-                                match.fileData = url;
-                            }
-                        });
-                    }
-
-                    if (res.data.procTranches && Array.isArray(res.data.procTranches)) {
-                        res.data.procTranches.forEach(row => {
-                            const title = getValCaseInsensitive(row, ["Tranche Title", "Title"]);
-                            const url = getValCaseInsensitive(row, ["Uploaded Invoice/Document", "File Data", "URL"]);
-                            
-                            const match = procurementTranches.find(t => t.title.toLowerCase() === title.toLowerCase());
-                            if (match && url) {
-                                match.doc = "Attached Invoice";
-                                match.fileData = url;
-                            }
-                        });
-                    }
-
-                    renderActiveWorkspace();
+            const callbackName = 'bracCloudCallback_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+            const script = document.createElement('script');
+            const cleanup = () => {
+                try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
+                if (script.parentNode) script.parentNode.removeChild(script);
+            };
+            const timeout = setTimeout(() => { cleanup(); console.error('Cloud data request timed out.'); }, 15000);
+            window[callbackName] = function(res) {
+                clearTimeout(timeout);
+                cleanup();
+                if (!res || res.status !== 'success' || !res.data) {
+                    console.error('Cloud data response:', res);
+                    return;
                 }
-            })
-            .catch(err => console.error(err));
+                const rows = res.data;
+                const newDocsBOMA = [], newDocsBRAC = [];
+                (rows.docsBoma || []).forEach(row => {
+                    const name = String(getValCaseInsensitive(row, ['File Name','File name','Name']) || 'Document');
+                    const type = String(getValCaseInsensitive(row, ['File Type','Format']) || 'File');
+                    const fileUrl = getValCaseInsensitive(row, ['File URL','File Data','URL','Attachment / Doc URL','File Data / Link']);
+                    const uploader = getValCaseInsensitive(row, ['Uploaded By','Uploaded By/ Category','Category','Uploader']) || 'User';
+                    const timestamp = getValCaseInsensitive(row, ['Timestamp','Date','Upload Date']);
+                    if (name || fileUrl) {
+                        const item = { id: String(getValCaseInsensitive(row,['Record ID','ID']) || (name + String(timestamp))), name, type, format:type,
+                            date: timestamp ? new Date(timestamp).toISOString().split('T')[0] : '', size:'Cloud Stored',
+                            data:fileUrl || '', uploader, isLink:(type === 'URL Link') };
+                        if (String(uploader).toUpperCase().includes('BOMA')) newDocsBOMA.push(item); else newDocsBRAC.push(item);
+                    }
+                });
+                docsBOMA = newDocsBOMA;
+                docsBRAC = newDocsBRAC;
+                document.getElementById('badge-docs').innerText = docsBOMA.length + docsBRAC.length;
+
+                (rows.boqPhases || []).forEach(row => {
+                    const phaseName = String(getValCaseInsensitive(row,['Phase Name','Item Description','BoQ Task','Tranche Title']) || '');
+                    const url = getValCaseInsensitive(row,['File URL','Uploaded Invoice/Document','File Data','URL','Attachment']);
+                    const fileName = getValCaseInsensitive(row,['File Name','Attachment Name']) || (url ? 'Attached File' : '');
+                    const status = getValCaseInsensitive(row,['Status']);
+                    const comment = getValCaseInsensitive(row,['Notes','Comments/ Offset notes','Comment']);
+                    const confirmed = getValCaseInsensitive(row,['Confirmation','Client BRAC']);
+                    const match = boqPhasesData.find(b => b.item === phaseName || b.id === phaseName);
+                    if (match) { if (url) { match.attachment=fileName || 'Attached File'; match.fileData=url; }
+                        if (status) match.status=status; if (comment) match.comment=comment; if (confirmed) match.confirmed=confirmed; }
+                });
+                (rows.internalDelib || []).forEach(row => {
+                    const refCode = String(getValCaseInsensitive(row,['Ref Code','Ref','ID']) || '');
+                    const topic = String(getValCaseInsensitive(row,['Topic','Topic / Specification Item']) || '');
+                    const url = getValCaseInsensitive(row,['File URL','Attachment / Doc URL','File Data','URL','Doc URL']);
+                    const fileName = getValCaseInsensitive(row,['File Name','Attachment Name']) || 'Attached File';
+                    const match = internalDeliberations.find(d => d.id === refCode || d.topic === topic);
+                    if (match) { if(url) { match.docLink=fileName; match.fileData=url; }
+                        const status=getValCaseInsensitive(row,['Status']), notes=getValCaseInsensitive(row,['Notes']);
+                        if(status) match.status=status; if(notes) match.notes=notes; }
+                });
+                (rows.procTranches || []).forEach(row => {
+                    const title=String(getValCaseInsensitive(row,['Tranche Title','Title']) || '');
+                    const url=getValCaseInsensitive(row,['File URL','Uploaded Invoice/Document','File Data','URL']);
+                    const fileName=getValCaseInsensitive(row,['File Name','Attachment Name']) || 'Attached Invoice';
+                    const match=procurementTranches.find(t=>t.title===title);
+                    if(match) { if(url) {match.doc=fileName; match.fileData=url;}
+                        const status=getValCaseInsensitive(row,['Status']), comments=getValCaseInsensitive(row,['Comments']);
+                        if(status) match.status=status; if(comments) match.comments=comments; }
+                });
+                renderActiveWorkspace();
+            };
+            script.onerror = () => { clearTimeout(timeout); cleanup(); console.error('Could not load dashboard data from Apps Script.'); };
+            script.src = APPS_SCRIPT_URL + '?callback=' + encodeURIComponent(callbackName) + '&_=' + Date.now();
+            document.head.appendChild(script);
         }
 
         function syncToGoogleSheets(payload) {
             const bodyData = new URLSearchParams();
-            bodyData.append("payload", JSON.stringify(payload));
-
+            bodyData.append('payload', JSON.stringify(payload));
+            showToast('Saving to shared dashboard...');
             fetch(APPS_SCRIPT_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-                body: bodyData
-            })
-            .then(res => res.json())
-            .then(() => {
-                showToast("Uploaded and Saved");
-                setTimeout(fetchCloudData, 1500);
-            })
-            .catch(() => {
-                showToast("Uploaded and Saved");
-                setTimeout(fetchCloudData, 2000);
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body: bodyData.toString()
+            }).then(() => {
+                // The response is opaque in no-cors mode. Re-read the shared sheet
+                // after the Apps Script write has had time to complete.
+                setTimeout(() => { isUploading = false; fetchCloudData(); showToast('Sync request sent'); }, 3000);
+            }).catch(err => {
+                isUploading = false;
+                console.error('Save request failed:', err);
+                showToast('Save failed — check connection');
             });
         }
 
@@ -389,98 +367,42 @@
         }
 
         function handleGlobalFileUpload(event) {
-            const files = event.target.files;
-            if (!files || files.length === 0 || !uploadTargetContext) return;
-            const file = files[0];
+            const file = event.target.files && event.target.files[0];
+            if (!file || !uploadTargetContext) return;
+            // Large base64 payloads can exceed Apps Script request limits/timeouts.
+            if (file.size > 8 * 1024 * 1024) {
+                alert('Please upload a file smaller than 8 MB. Compress large photos or PDFs before uploading.');
+                uploadTargetContext = null; event.target.value=''; return;
+            }
             const ext = file.name.split('.').pop().toUpperCase();
+            const target = {...uploadTargetContext};
             const reader = new FileReader();
-
+            reader.onerror = () => { showToast('Could not read selected file'); uploadTargetContext=null; };
             reader.onload = function(e) {
                 const base64Data = e.target.result;
                 isUploading = true;
                 if (uploadLockTimer) clearTimeout(uploadLockTimer);
-                uploadLockTimer = setTimeout(() => { isUploading = false; }, 20000);
-
-                showToast("Uploading to Cloud...");
-
-                if (uploadTargetContext.workspace === '1') {
-                    const category = uploadTargetContext.refId === 'boma' ? "Kateline (BOMA Statutory)" : "Kateline (BRAC Directive)";
-                    const newItem = {
-                        id: Date.now(),
-                        name: file.name,
-                        type: ext,
-                        format: ext,
-                        date: new Date().toISOString().split('T')[0],
-                        size: "Cloud Stored",
-                        data: base64Data,
-                        uploader: category,
-                        isLink: false
-                    };
-                    if (category.includes("BOMA")) docsBOMA.unshift(newItem);
-                    else docsBRAC.unshift(newItem);
-                    document.getElementById('badge-docs').innerText = docsBOMA.length + docsBRAC.length;
-                    renderActiveWorkspace();
-
-                    syncToGoogleSheets({
-                        workspace: "1",
-                        sheetName: "BOMA-BRAC DOCUMENTATION AND APP",
-                        fileName: file.name,
-                        fileType: ext,
-                        fileData: base64Data,
-                        uploadedBy: category
-                    });
-                } else if (uploadTargetContext.workspace === '2') {
-                    const item = boqPhasesData.find(x => x.id === uploadTargetContext.refId);
-                    if (item) {
-                        item.attachment = file.name;
-                        item.fileData = base64Data;
-                    }
-                    renderActiveWorkspace();
-                    syncToGoogleSheets({
-                        workspace: "2",
-                        sheetName: "Contract Tracker (BoQ Phases)",
-                        phaseName: item ? item.item : "BoQ Item",
-                        amount: file.name,
-                        status: "Attached",
-                        fileData: base64Data,
-                        notes: item ? item.comment : ""
-                    });
-                } else if (uploadTargetContext.workspace === '3') {
-                    const item = internalDeliberations.find(x => x.id === uploadTargetContext.refId);
-                    if (item) {
-                        item.docLink = file.name;
-                        item.fileData = base64Data;
-                    }
-                    renderActiveWorkspace();
-                    syncToGoogleSheets({
-                        workspace: "3",
-                        sheetName: "BRAC Internal Tracker (Tor Spec",
-                        refCode: uploadTargetContext.refId,
-                        topic: item ? item.topic : "Internal Deliberation",
-                        owner: item ? item.owner : "",
-                        status: item ? item.status : "Approved",
-                        notes: item ? item.notes : "",
-                        fileData: base64Data
-                    });
-                } else if (uploadTargetContext.workspace === '4') {
-                    const item = procurementTranches.find(x => x.id == uploadTargetContext.refId);
-                    if (item) {
-                        item.doc = file.name;
-                        item.fileData = base64Data;
-                    }
-                    renderActiveWorkspace();
-                    syncToGoogleSheets({
-                        workspace: "4",
-                        sheetName: "Procurement & Payments",
-                        trancheTitle: item ? item.title : "Tranche",
-                        amount: item ? item.amount : "",
-                        status: item ? item.status : "Uploaded",
-                        fileData: base64Data,
-                        comments: item ? item.comments : ""
-                    });
+                uploadLockTimer = setTimeout(() => { isUploading = false; }, 60000);
+                showToast('Uploading file to shared Drive...');
+                let payload = { workspace:target.workspace, fileName:file.name, fileType:ext, fileData:base64Data };
+                if (target.workspace === '1') {
+                    const category = target.refId === 'boma' ? 'Kateline (BOMA Statutory)' : 'Kateline (BRAC Directive)';
+                    payload = {...payload, sheetName:'BOMA-BRAC DOCUMENTATION AND APP', uploadedBy:category};
+                } else if (target.workspace === '2') {
+                    const item=boqPhasesData.find(x=>x.id===target.refId);
+                    payload={...payload,sheetName:'Contract Tracker (BoQ Phases)',phaseName:item?item.item:target.refId,
+                        amount:item?item.confirmed:'',status:item?item.status:'Pending',notes:item?item.comment:''};
+                } else if (target.workspace === '3') {
+                    const item=internalDeliberations.find(x=>x.id===target.refId);
+                    payload={...payload,sheetName:'BRAC Internal Tracker (Tor Spec',refCode:target.refId,
+                        topic:item?item.topic:'',owner:item?item.owner:'',status:item?item.status:'',notes:item?item.notes:''};
+                } else if (target.workspace === '4') {
+                    const item=procurementTranches.find(x=>x.id==target.refId);
+                    payload={...payload,sheetName:'Procurement & Payments',trancheTitle:item?item.title:'',
+                        amount:item?item.amount:'',status:item?item.status:'',comments:item?item.comments:''};
                 }
-
-                uploadTargetContext = null;
+                syncToGoogleSheets(payload);
+                uploadTargetContext=null;
             };
             reader.readAsDataURL(file);
         }
@@ -678,6 +600,7 @@
                 sheetName: "Contract Tracker (BoQ Phases)",
                 phaseName: boqPhasesData[index].item,
                 amount: boqPhasesData[index].confirmed,
+                confirmation: boqPhasesData[index].confirmed,
                 status: val,
                 notes: boqPhasesData[index].comment
             });
@@ -689,7 +612,8 @@
                 workspace: "2",
                 sheetName: "Contract Tracker (BoQ Phases)",
                 phaseName: boqPhasesData[index].item,
-                amount: val,
+                amount: boqPhasesData[index].confirmed,
+                confirmation: val,
                 status: boqPhasesData[index].status,
                 notes: boqPhasesData[index].comment
             });
@@ -702,6 +626,7 @@
                 sheetName: "Contract Tracker (BoQ Phases)",
                 phaseName: boqPhasesData[index].item,
                 amount: boqPhasesData[index].confirmed,
+                confirmation: boqPhasesData[index].confirmed,
                 status: boqPhasesData[index].status,
                 notes: val
             });
@@ -1036,8 +961,9 @@
             `;
         }
 
+        renderActiveWorkspace();
         fetchCloudData();
-        setInterval(fetchCloudData, 6000);
+        setInterval(fetchCloudData, 15000);
     </script>
 </body>
 </html>
